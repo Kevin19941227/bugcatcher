@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>抓蟲蟲</title>
+  <script src="./assets/js/phaser@3.88.2.min.js"></script>
+</head>
+
+<body>
+  <script>
+    const config = {
+      type: Phaser.AUTO,
+      width: 800,
+      height: 600,
+      physics: {
+        default: 'arcade',
+        arcade: {
+          gravity: { y: 300 },
+          debug: true,
+          checkCollision: { up: true, down: true, left: true, right: true }
+        }
+      },
+      scene: {
+        preload: preload,
+        create: create,
+        update: update
+      }
+    };
+
+    var game = new Phaser.Game(config);
+
+    let platforms, player, cursors, stars, bombs, score = 0, restartText, scoreText, shiftKey, gameOver = false;
+    let invincible = false;
+
+
+    let bgKeys = ['bg1', 'bg2', 'bg3'];
+    let currentBgIndex = 0;
+    let backgroundImage;
+
+    function preload() {
+      this.load.image('bg1', './assets/bg1.png');
+      this.load.image('bg2', './assets/bg2.png');
+      this.load.image('bg3', './assets/bg3.png');
+      this.load.image('ground', './assets/g6.png');
+      this.load.image('star', './assets/fly4.png');
+      this.load.image('bomb', './assets/bee2.png');
+      this.load.spritesheet('dude', './assets/dude.png', { frameWidth: 32, frameHeight: 48 });
+    }
+
+    function assignBezierTween(star, scene) {
+      let start = new Phaser.Math.Vector2(star.x, star.y);
+      let targetX = Phaser.Math.Between(50, scene.game.config.width - 50);
+      let targetY = Phaser.Math.Between(50, scene.game.config.height - 50);
+      let end = new Phaser.Math.Vector2(targetX, targetY);
+      let cp1 = new Phaser.Math.Vector2(
+        Phaser.Math.Between(Math.min(start.x, end.x), Math.max(start.x, end.x)),
+        Phaser.Math.Between(Math.min(start.y, end.y), Math.max(start.y, end.y))
+      );
+      let cp2 = new Phaser.Math.Vector2(
+        Phaser.Math.Between(Math.min(start.x, end.x), Math.max(start.x, end.x)),
+        Phaser.Math.Between(Math.min(start.y, end.y), Math.max(start.y, end.y))
+      );
+      let curve = new Phaser.Curves.CubicBezier(start, cp1, cp2, end);
+      star.t = 0;
+      star.tween = scene.tweens.add({
+        targets: star,
+        t: 1,
+        duration: 2000,
+        ease: 'Cubic.easeOut',
+        onUpdate: function (tween, target) {
+          let newPos = curve.getPoint(target.t);
+          target.x = newPos.x;
+          target.y = newPos.y;
+          if (target.body) {
+            target.body.reset(newPos.x, newPos.y);
+          }
+
+          let tangent = curve.getTangent(target.t);
+          let angle = Phaser.Math.RadToDeg(Math.atan2(tangent.y, tangent.x)) + 90;
+          target.setAngle(angle);
+        },
+        onComplete: function () {
+          assignBezierTween(star, scene);
+        }
+      });
+    }
+
+    function starCollisionHandler(star, platform) {
+      const now = star.scene.time.now;
+      if (!star.lastCollisionTime || now - star.lastCollisionTime > 100) {
+        star.lastCollisionTime = now;
+        if (star.tween && star.tween.isPlaying()) {
+          star.tween.stop();
+        }
+        assignBezierTween(star, star.scene);
+      }
+    }
+
+    function bombPlatformCollisionHandler(bomb, platform) {
+      bomb.setScale(bomb.scaleX + 0.01, bomb.scaleY + 0.01);
+    }
+
+
+    function handleStarOverlap(player, star) {
+      if (star.isInvincible) {
+        collectInvincibleStar.call(this, player, star);
+      } else {
+        collectStar(player, star);
+      }
+    }
+
+    function create() {
+      backgroundImage = this.add.image(400, 300, bgKeys[currentBgIndex]).setScale(2);
+
+      platforms = this.physics.add.staticGroup();
+      platforms.create(400, 568, 'ground').setScale(2).refreshBody();
+      platforms.create(600, 400, 'ground');
+      platforms.create(50, 250, 'ground');
+      platforms.create(750, 220, 'ground');
+      platforms.create(400, -29, 'ground').setScale(2).refreshBody();
+
+      player = this.physics.add.sprite(10, 450, 'dude');
+      player.setBounce(0.2);
+      player.setCollideWorldBounds(true);
+
+      this.anims.create({
+        key: 'left',
+        frames: this.anims.generateFrameNumbers('dude', { start: 0, end: 3 }),
+        frameRate: 10,
+        repeat: -1
+      });
+      this.anims.create({
+        key: 'turn',
+        frames: [{ key: 'dude', frame: 4 }],
+        frameRate: 20
+      });
+      this.anims.create({
+        key: 'right',
+        frames: this.anims.generateFrameNumbers('dude', { start: 5, end: 8 }),
+        frameRate: 10,
+        repeat: -1
+      });
+
+      stars = this.physics.add.group({
+        key: 'star',
+        repeat: 11,
+        setXY: { x: 12, y: 0, stepX: 0 },
+        setScale: { x: 0.1, y: 0.1 }
+      });
+      let currentX = 12;
+      stars.children.iterate(function (child) {
+        let color = Phaser.Display.Color.GetColor(
+          Phaser.Math.Between(0, 255),
+          Phaser.Math.Between(0, 255),
+          Phaser.Math.Between(0, 255)
+        );
+        let randomOffset = Phaser.Math.Between(20, 80);
+        currentX += randomOffset;
+        child.x = currentX;
+        child.setTint(color);
+        child.setBounceY(Phaser.Math.FloatBetween(0.4, 0.8));
+      });
+      let starChildren = stars.getChildren();
+      let invincibleStar = starChildren[starChildren.length - 1];
+      invincibleStar.isInvincible = true;
+      invincibleStar.setTint(0xffff00);
+
+      bombs = this.physics.add.group();
+
+      scoreText = this.add.text(16, 16, '分數: 0', {
+        fontSize: '36px',
+        fontFamily: '微軟正黑體',
+        backgroundColor: 'rgba(100, 220, 100, 0.5)',
+        color: 'black',
+        fixedWidth: config.width - 32
+      });
+
+      this.physics.add.collider(player, platforms);
+
+      this.physics.add.collider(stars, platforms, starCollisionHandler, null, this);
+      this.physics.add.collider(bombs, platforms, bombPlatformCollisionHandler, null, this);
+
+      this.physics.world.on('worldbounds', function (body) {
+        if (body.gameObject && body.gameObject.texture.key === 'bomb') {
+          body.gameObject.setScale(body.gameObject.scaleX + 0.1, body.gameObject.scaleY + 0.1);
+        }
+      }, this);
+
+      this.physics.add.overlap(player, stars, handleStarOverlap, null, this);
+      this.physics.add.overlap(player, bombs, hitBomb, null, this);
+
+      cursors = this.input.keyboard.createCursorKeys();
+      shiftKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
+
+      stars.children.iterate(function (star) {
+        assignBezierTween(star, this);
+      }, this);
+
+      restartText = this.add.text(config.width / 2 - 100, config.height / 2 - 40, '重新開始', {
+        fontSize: '40px 微軟正黑體',
+        color: 'white',
+        stroke: 'red',
+        padding: 10,
+        backgroundColor: 'black'
+      });
+      restartText.visible = false;
+      restartText.setInteractive().on('pointerdown', (pointer, localX, localY, event) => {
+        score = 0;
+        gameOver = false;
+        this.scene.restart();
+      })
+
+    }
+
+
+    function collectStar(player, star) {
+      star.disableBody(true, true);
+      score += 10;
+      scoreText.setText('分數: ' + score);
+
+      if (stars.countActive(true) === 0) {
+
+        currentBgIndex = (currentBgIndex + 1) % bgKeys.length;
+        backgroundImage.setTexture(bgKeys[currentBgIndex]);
+
+        stars.children.iterate(function (child) {
+          if (child.tween) {
+            child.tween.stop();
+            child.tween = null;
+          }
+          child.enableBody(true, child.x, 0, true, true);
+          assignBezierTween(child, child.scene);
+        });
+        let x = (player.x < 400) ? Phaser.Math.Between(400, 800) : Phaser.Math.Between(0, 400);
+        let bomb = bombs.create(x, 16, 'bomb');
+        bomb.setBounce(1);
+        bomb.setScale(0.2);
+        bomb.setCollideWorldBounds(true);
+
+        bomb.body.onWorldBounds = true;
+        bomb.setVelocity(Phaser.Math.Between(-200, 200), 20);
+        bomb.allowGravity = false;
+
+      }
+    }
+
+
+    function collectInvincibleStar(player, star) {
+      console.log('Collected invincible star');
+      if (invincible) return;
+      star.disableBody(true, true);
+      invincible = true;
+      player.setTint(0x00ff00);
+      this.time.addEvent({
+        delay: 5000,
+        callback: function () {
+          invincible = false;
+          player.clearTint();
+        },
+        callbackScope: this
+      });
+    }
+
+    function hitBomb(player, bomb) {
+      if (invincible) {
+        return;
+      }
+      this.physics.pause();
+      player.setTint(0xff0000);
+      player.anims.play('turn');
+      gameOver = true;
+    }
+
+    function update() {
+      if (gameOver) {
+        restartText.setVisible(true);
+        console.log('遊戲結束，重新開始遊戲')
+      } 
+      bombs.children.iterate(function (child) {
+        let bombV = Phaser.Math.Between(80, 150);
+        let angle = Math.atan2(player.y - child.y, player.x - child.x);
+        let vx = bombV * Math.cos(angle);
+        child.setVelocityX(vx);
+      });
+      stars.children.iterate(function (child) {
+        if (!child.isInvincible) {
+          let color = Phaser.Display.Color.GetColor(
+            Phaser.Math.Between(0, 255),
+            Phaser.Math.Between(0, 255),
+            Phaser.Math.Between(0, 255)
+          );
+          child.setTint(color);
+        }
+      });
+
+      if (gameOver) return;
+      let speed = 200;
+      if (shiftKey.isDown) speed += 100;
+
+      if (player.body.blocked.down) {
+        player.body.setGravityY(600);
+        player.body.setGravityX(0);
+        player.angle = 0;
+      }
+      if (player.body.blocked.up) {
+        player.body.setGravityY(-600);
+        player.body.setGravityX(0);
+        player.angle = 180;
+      }
+      if (player.body.blocked.left) {
+        player.body.setGravityX(-600);
+        player.body.setGravityY(0);
+        player.angle = 90;
+      }
+      if (player.body.blocked.right) {
+        player.body.setGravityX(600);
+        player.body.setGravityY(0);
+        player.angle = 270;
+      }
+
+      if (player.body.gravity.y !== 0) {
+        if (cursors.left.isDown) {
+          player.setVelocityX(-speed);
+          if (player.body.gravity.y < 0)
+            player.anims.play('right', true);
+          else
+            player.anims.play('left', true);
+        } else if (cursors.right.isDown) {
+          player.setVelocityX(speed);
+          if (player.body.gravity.y < 0)
+            player.anims.play('left', true);
+          else
+            player.anims.play('right', true);
+        } else {
+          player.setVelocityX(0);
+          player.anims.play('turn');
+        }
+        if (cursors.up.isDown && player.body.blocked.down) {
+          player.setVelocityY(-530);
+        }
+        if (cursors.up.isDown && player.body.blocked.up) {
+          player.setVelocityY(330);
+        }
+      } else if (player.body.gravity.x !== 0) {
+        if (cursors.left.isDown) {
+          if (player.body.gravity.x < 0) {
+            player.setVelocityY(-speed);
+            player.anims.play('left', true);
+          } else {
+            player.setVelocityY(speed);
+            player.anims.play('left', true);
+          }
+        } else if (cursors.right.isDown) {
+          if (player.body.gravity.x < 0) {
+            player.setVelocityY(speed);
+            player.anims.play('right', true);
+          } else {
+            player.setVelocityY(-speed);
+            player.anims.play('right', true);
+          }
+        } else {
+          player.setVelocityY(0);
+          player.anims.play('turn');
+        }
+        if (cursors.up.isDown && player.body.blocked.right) {
+          player.setVelocityX(-330);
+        }
+        if (cursors.up.isDown && player.body.blocked.left) {
+          player.setVelocityX(330);
+        }
+      }
+    }
+  </script>
+</body>
+
+</html>
